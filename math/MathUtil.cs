@@ -14,7 +14,8 @@ namespace g3
         public const double ZeroTolerance = 1e-08;
         public const double Epsilon = 2.2204460492503131e-016;
         public const double SqrtTwo = 1.41421356237309504880168872420969807;
-		public const double SqrtThree = 1.73205080756887729352744634150587236;
+        public const double SqrtTwoInv = 1.0 / SqrtTwo;
+        public const double SqrtThree = 1.73205080756887729352744634150587236;
 
         public const float Deg2Radf = (float)(Math.PI / 180.0);
         public const float Rad2Degf = (float)(180.0 / Math.PI);
@@ -36,17 +37,10 @@ namespace g3
 
 
         public static bool EpsilonEqual(double a, double b, double epsilon = MathUtil.Epsilon) {
-            return Math.Abs(a - b) < epsilon;
+            return Math.Abs(a - b) <= epsilon;
         }
         public static bool EpsilonEqual(float a, float b, float epsilon = MathUtil.Epsilonf) {
-            return (float)Math.Abs(a - b) < epsilon;
-        }
-
-        public static bool PrecisionEqual(double a, double b, int nDigits) {
-            return Math.Round(a, nDigits) == Math.Round(b, nDigits);
-        }
-        public static bool PrecisionEqual(float a, float b, int nDigits) {
-            return Math.Round(a, nDigits) == Math.Round(b, nDigits);
+            return (float)Math.Abs(a - b) <= epsilon;
         }
 
         // ugh C# generics so limiting...
@@ -64,6 +58,12 @@ namespace g3
         }
         public static int Clamp(int f, int low, int high) {
             return (f < low) ? low : (f > high) ? high : f;
+        }
+
+        public static int ModuloClamp(int f, int N) {
+            while (f < 0)
+                f += N;
+            return f % N;
         }
 
         // fMinMaxValue may be signed
@@ -252,7 +252,11 @@ namespace g3
             vFrom[nPlaneNormalIdx] = vTo[nPlaneNormalIdx] = 0.0f;
             vFrom.Normalize();
             vTo.Normalize();
-            float fSign = Math.Sign(vFrom.Cross(vTo)[nPlaneNormalIdx]);
+            Vector3f c = vFrom.Cross(vTo);
+            if (c.LengthSquared < MathUtil.ZeroTolerancef) {        // vectors are parallel
+                return vFrom.Dot(vTo) < 0 ? 180.0f : 0;
+            }
+            float fSign = Math.Sign(c[nPlaneNormalIdx]);
             float fAngle = fSign * Vector3f.AngleD(vFrom, vTo);
             return fAngle;
         }
@@ -261,7 +265,11 @@ namespace g3
             vFrom[nPlaneNormalIdx] = vTo[nPlaneNormalIdx] = 0.0;
             vFrom.Normalize();
             vTo.Normalize();
-            double fSign = Math.Sign(vFrom.Cross(vTo)[nPlaneNormalIdx]);
+            Vector3d c = vFrom.Cross(vTo);
+            if (c.LengthSquared < MathUtil.ZeroTolerance) {        // vectors are parallel
+                return vFrom.Dot(vTo) < 0 ? 180.0 : 0;
+            }
+            double fSign = Math.Sign(c[nPlaneNormalIdx]);
             double fAngle = fSign * Vector3d.AngleD(vFrom, vTo);
             return fAngle;
         }
@@ -273,6 +281,9 @@ namespace g3
             vFrom.Normalize();
             vTo.Normalize();
             Vector3f c = Vector3f.Cross(vFrom, vTo);
+            if (c.LengthSquared < MathUtil.ZeroTolerancef) {        // vectors are parallel
+                return vFrom.Dot(vTo) < 0 ? 180.0f : 0;
+            }
             float fSign = Math.Sign(Vector3f.Dot(c, planeN));
             float fAngle = fSign * Vector3f.AngleD(vFrom, vTo);
             return fAngle;
@@ -284,6 +295,9 @@ namespace g3
             vFrom.Normalize();
             vTo.Normalize();
             Vector3d c = Vector3d.Cross(vFrom, vTo);
+            if (c.LengthSquared < MathUtil.ZeroTolerance) {        // vectors are parallel
+                return vFrom.Dot(vTo) < 0 ? 180.0 : 0;
+            }
             double fSign = Math.Sign(Vector3d.Dot(c, planeN));
             double fAngle = fSign * Vector3d.AngleD(vFrom, vTo);
             return fAngle;
@@ -525,7 +539,7 @@ namespace g3
         /// If point is in triangle plane and inside triangle, coords will be positive and sum to 1.
         /// ie if result is a, then vPoint = a.x*V0 + a.y*V1 + a.z*V2.
         /// </summary>
-        public static Vector3d BarycentricCoords(Vector3d vPoint, Vector3d V0, Vector3d V1, Vector3d V2)
+        public static Vector3d BarycentricCoords(ref Vector3d vPoint, ref Vector3d V0, ref Vector3d V1, ref Vector3d V2)
         {
             Vector3d kV02 = V0 - V2;
             Vector3d kV12 = V1 - V2;
@@ -542,7 +556,9 @@ namespace g3
             double fBary3 = 1.0 - fBary1 - fBary2;
             return new Vector3d(fBary1, fBary2, fBary3);
         }
-
+        public static Vector3d BarycentricCoords(Vector3d vPoint, Vector3d V0, Vector3d V1, Vector3d V2) {
+            return BarycentricCoords(ref vPoint, ref V0, ref V1, ref V2);
+        }
 
         /// <summary>
         /// Compute barycentric coordinates/weights of vPoint inside triangle (V0,V1,V2). 

@@ -97,17 +97,31 @@ namespace g3
         }
 
 
+        /// <summary>
+        /// returns cross-product of this vector with v2 (same as DotPerp)
+        /// </summary>
         public double Cross(Vector2d v2) {
             return x * v2.y - y * v2.x;
         }
 
 
+        /// <summary>
+        /// returns right-perp vector, ie rotated 90 degrees to the right
+        /// </summary>
 		public Vector2d Perp {
 			get { return new Vector2d(y, -x); }
 		}
+
+        /// <summary>
+        /// returns right-perp vector, ie rotated 90 degrees to the right
+        /// </summary>
 		public Vector2d UnitPerp {
 			get { return new Vector2d(y, -x).Normalized; }
 		}
+
+        /// <summary>
+        /// returns dot-product of this vector with v2.Perp
+        /// </summary>
 		public double DotPerp(Vector2d v2) {
 			return x*v2.y - y*v2.x;
 		}
@@ -237,18 +251,16 @@ namespace g3
 
 
         public bool EpsilonEqual(Vector2d v2, double epsilon) {
-            return Math.Abs(x - v2.x) < epsilon && 
-                   Math.Abs(y - v2.y) < epsilon;
-        }
-        public bool PrecisionEqual(Vector2d v2, int nDigits)
-        {
-            return Math.Round(x, nDigits) == Math.Round(v2.x, nDigits) &&
-                   Math.Round(y, nDigits) == Math.Round(v2.y, nDigits);
+            return Math.Abs(x - v2.x) <= epsilon && 
+                   Math.Abs(y - v2.y) <= epsilon;
         }
 
 
-        public static Vector2d Lerp(Vector2d a, Vector2d b, double t)
-        {
+        public static Vector2d Lerp(Vector2d a, Vector2d b, double t) {
+            double s = 1 - t;
+            return new Vector2d(s * a.x + t * b.x, s * a.y + t * b.y);
+        }
+        public static Vector2d Lerp(ref Vector2d a, ref Vector2d b, double t) {
             double s = 1 - t;
             return new Vector2d(s * a.x + t * b.x, s * a.y + t * b.y);
         }

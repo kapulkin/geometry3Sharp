@@ -138,17 +138,14 @@ namespace g3
 
         public void Rotate(Quaternionf q)
         {
-            Debug.Assert(rotation.w != 0);      // catch un-initialized quaternions
             rotation = q * rotation;
         }
         public Frame3f Rotated(Quaternionf q)
         {
-            Debug.Assert(rotation.w != 0);
             return new Frame3f(this.origin, q * this.rotation);
         }
         public Frame3f Rotated(float fAngle, int nAxis)
         {
-            Debug.Assert(rotation.w != 0);
             return this.Rotated(new Quaternionf(GetAxis(nAxis), fAngle));
         }
 
@@ -164,35 +161,37 @@ namespace g3
 
         public void RotateAround(Vector3f point, Quaternionf q)
         {
-            Debug.Assert(rotation.w != 0);
             Vector3f dv = q * (origin - point);
             rotation = q * rotation;
             origin = point + dv;
         }
         public Frame3f RotatedAround(Vector3f point, Quaternionf q)
         {
-            Debug.Assert(rotation.w != 0);
             Vector3f dv = q * (this.origin - point);
             return new Frame3f(point + dv, q * this.rotation);
         }
 
         public void AlignAxis(int nAxis, Vector3f vTo)
         {
-            Debug.Assert(rotation.w != 0);
             Quaternionf rot = Quaternionf.FromTo(GetAxis(nAxis), vTo);
             Rotate(rot);
         }
         public void ConstrainedAlignAxis(int nAxis, Vector3f vTo, Vector3f vAround)
         {
-            Debug.Assert(rotation.w != 0);
             Vector3f axis = GetAxis(nAxis);
             float fAngle = MathUtil.PlaneAngleSignedD(axis, vTo, vAround);
             Quaternionf rot = Quaternionf.AxisAngleD(vAround, fAngle);
             Rotate(rot);
         }
 
+        public Vector3f ProjectToPlane(Vector3f p, int nNormal)
+        {
+            Vector3f d = p - origin;
+            Vector3f n = GetAxis(nNormal);
+            return origin + (d - d.Dot(n) * n);
+        }
 
-        public Vector3f FromFrameP(Vector2f v, int nPlaneNormalAxis)
+        public Vector3f FromPlaneUV(Vector2f v, int nPlaneNormalAxis)
         {
             Vector3f dv = new Vector3f(v[0], v[1], 0);
             if (nPlaneNormalAxis == 0) {
@@ -202,12 +201,17 @@ namespace g3
             }
             return this.rotation * dv + this.origin;
         }
+        [System.Obsolete("replaced with FromPlaneUV")]
+        public Vector3f FromFrameP(Vector2f v, int nPlaneNormalAxis) {
+            return FromPlaneUV(v, nPlaneNormalAxis);
+        }
 
-        public Vector3f ProjectToPlane(Vector3f p, int nNormal)
+        public Vector2f ToPlaneUV(Vector3f p, int nNormal = 2, int nAxis0 = 0, int nAxis1 = 1)
         {
             Vector3f d = p - origin;
-            Vector3f n = GetAxis(nNormal);
-            return origin + (d - d.Dot(n) * n);
+            float fu = d.Dot(GetAxis(nAxis0));
+            float fv = d.Dot(GetAxis(nAxis1));
+            return new Vector2f(fu, fv);
         }
 
 
@@ -367,10 +371,6 @@ namespace g3
         public bool EpsilonEqual(Frame3f f2, float epsilon) {
             return origin.EpsilonEqual(f2.origin, epsilon) &&
                 rotation.EpsilonEqual(f2.rotation, epsilon);
-        }
-        public bool PrecisionEqual(Frame3f f2, int nDigits) {
-            return origin.PrecisionEqual(f2.origin, nDigits) && 
-                rotation.PrecisionEqual(f2.rotation, nDigits);
         }
 
 

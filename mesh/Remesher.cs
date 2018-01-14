@@ -1,20 +1,21 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections;
 using System.Diagnostics;
 
 
 namespace g3 {
 	
-	public class Remesher {
-
-		protected DMesh3 mesh;
-        MeshConstraints constraints = null;
+	public class Remesher : MeshRefinerBase
+    {
         IProjectionTarget target = null;
 
 		public bool EnableFlips = true;
 		public bool EnableCollapses = true;
 		public bool EnableSplits = true;
 		public bool EnableSmoothing = true;
+
+        public bool PreventNormalFlips = false;
 
 		public double MinEdgeLength = 0.001f;
 		public double MaxEdgeLength = 0.1f;
@@ -44,10 +45,6 @@ namespace g3 {
 
         // other options
 
-        // if true, then when two Fixed vertices have the same non-invalid SetID,
-        // we treat them as not fixed and allow collapse
-        public bool AllowCollapseFixedVertsWithSameSetID = true;
-
         // [RMS] this is a debugging aid, will break to debugger if these edges are touched, in debug builds
         public List<int> DebugEdges = new List<int>();
 
@@ -72,30 +69,22 @@ namespace g3 {
         // across runs because we smooth in-place and hence there will be order side-effects.
         public bool EnableParallelSmooth = true;
 
+        // if smoothing is done in-place, we don't need an extra buffer, but also 
+        // there will some randomness introduced in results. Probably worse.
+        public bool EnableSmoothInPlace = false;
 
-		public Remesher(DMesh3 m) {
-			mesh = m;
+		public Remesher(DMesh3 m) : base(m)
+        {
 		}
         protected Remesher()        // for subclasses that extend our behavior
         {
         }
 
 
-        public DMesh3 Mesh {
-            get { return mesh; }
+
+        public IProjectionTarget ProjectionTarget {
+            get { return this.target; }
         }
-        public MeshConstraints Constraints {
-            get { return constraints; }
-        }
-
-
-        //! This object will be modified !!!
-        public void SetExternalConstraints(MeshConstraints cons)
-        {
-            constraints = cons;
-        }
-
-
         public void SetProjectionTarget(IProjectionTarget target)
         {
             this.target = target;
@@ -188,7 +177,10 @@ namespace g3 {
 
             begin_smooth();
             if (EnableSmoothing && SmoothSpeedT > 0) {
-                FullSmoothPass_InPlace(EnableParallelSmooth);
+                if (EnableSmoothInPlace)
+                    FullSmoothPass_InPlace(EnableParallelSmooth);
+                else
+                    FullSmoothPass_Buffer(EnableParallelSmooth);
                 DoDebugChecks();
             }
             end_smooth();
@@ -321,6 +313,14 @@ namespace g3 {
                 } else
                     vNewPos = get_projected_collapse_position(iKeep, vNewPos);
 
+                // if new position would flip normal of one of the existing triangles
+                // either one-ring, don't allow it
+                if (PreventNormalFlips) {
+                    if (collapse_creates_flip_or_invalid(a, b, ref vNewPos, t0, t1) || collapse_creates_flip_or_invalid(b, a, ref vNewPos, t0, t1)) {
+                        goto abort_collapse;
+                    }
+                }
+
                 // TODO be smart about picking b (keep vtx). 
                 //    - swap if one is bdry vtx, for example?
                 // lots of cases where we cannot collapse, but we should just let
@@ -343,8 +343,8 @@ namespace g3 {
 					return ProcessResult.Ok_Collapsed;
 				} else 
 					bTriedCollapse = true;
-
 			}
+            abort_collapse:
 
             end_collapse();
             begin_flip();
@@ -353,10 +353,8 @@ namespace g3 {
 			bool bTriedFlip = false;
 			if ( EnableFlips && constraint.CanFlip && bIsBoundaryEdge == false ) {
 
-				// don't want to flip if it will invert triangle...tetrahedron sign??
-
-				// can we do this more efficiently somehow?
-				bool a_is_boundary_vtx = (MeshIsClosed) ? false : (bIsBoundaryEdge || mesh.IsBoundaryVertex(a));
+                // can we do this more efficiently somehow?
+                bool a_is_boundary_vtx = (MeshIsClosed) ? false : (bIsBoundaryEdge || mesh.IsBoundaryVertex(a));
 				bool b_is_boundary_vtx = (MeshIsClosed) ? false : (bIsBoundaryEdge || mesh.IsBoundaryVertex(b));
 				bool c_is_boundary_vtx = (MeshIsClosed) ? false : mesh.IsBoundaryVertex(c);
 				bool d_is_boundary_vtx = (MeshIsClosed) ? false :  mesh.IsBoundaryVertex(d);
@@ -374,9 +372,12 @@ namespace g3 {
 				int flip_err = Math.Abs((valence_a-1)-valence_a_target) + Math.Abs((valence_b-1)-valence_b_target)
 				                   + Math.Abs((valence_c+1)-valence_c_target) + Math.Abs((valence_d+1)-valence_d_target);
 
-				if ( flip_err < curr_err ) {
-					// try flip
-					DMesh3.EdgeFlipInfo flipInfo;
+                bool bTryFlip = flip_err < curr_err;
+                if (bTryFlip && PreventNormalFlips && flip_inverts_normals(a, b, c, d, t0))
+                    bTryFlip = false;
+
+                if (bTryFlip) {
+                    DMesh3.EdgeFlipInfo flipInfo;
                     COUNT_FLIPS++;
 					MeshResult result = mesh.FlipEdge(edgeID, out flipInfo);
 					if ( result == MeshResult.Ok ) {
@@ -386,7 +387,6 @@ namespace g3 {
 						bTriedFlip = true;
 
 				}
-
 			}
 
             end_flip();
@@ -423,7 +423,7 @@ namespace g3 {
         // The edge needs to inherit the constraint on the other pre-existing edge that we kept.
         // In addition, if the edge vertices were both constrained, then we /might/
         // want to also constrain this new vertex, possibly project to constraint target. 
-        void update_after_split(int edgeID, int va, int vb, ref DMesh3.EdgeSplitInfo splitInfo)
+        protected virtual void update_after_split(int edgeID, int va, int vb, ref DMesh3.EdgeSplitInfo splitInfo)
         {
             bool bPositionFixed = false;
             if (constraints != null && constraints.HasEdgeConstraint(edgeID)) {
@@ -467,123 +467,7 @@ namespace g3 {
         }
 
 
-
-
-
-        // Figure out if we can collapse edge eid=[a,b] under current constraint set.
-        // First we resolve vertex constraints using can_collapse_vtx(). However this
-        // does not catch some topological cases at the edge-constraint level, which 
-        // which we will only be able to detect once we know if we are losing a or b.
-        // See comments on can_collapse_vtx() for what collapse_to is for.
-        bool can_collapse_constraints(int eid, int a, int b, int c, int d, int tc, int td, out int collapse_to)
-        {
-            collapse_to = -1;
-            if (constraints == null)
-                return true;
-            bool bVtx = can_collapse_vtx(eid, a, b, out collapse_to);
-            if (bVtx == false)
-                return false;
-
-            // when we lose a vtx in a collapse, we also lose two edges [iCollapse,c] and [iCollapse,d].
-            // If either of those edges is constrained, we would lose that constraint.
-            // This would be bad.
-            int iCollapse = (collapse_to == a) ? b : a;
-            if (c != DMesh3.InvalidID) {
-                int ec = mesh.FindEdgeFromTri(iCollapse, c, tc);
-                if (constraints.GetEdgeConstraint(ec).IsUnconstrained == false)
-                    return false;
-            }
-            if (d != DMesh3.InvalidID) {
-                int ed = mesh.FindEdgeFromTri(iCollapse, d, td);
-                if (constraints.GetEdgeConstraint(ed).IsUnconstrained == false)
-                    return false;
-            }
-
-            return true;
-        }
-
-
-        // resolve vertex constraints for collapsing edge eid=[a,b]. Generally we would
-        // collapse a to b, and set the new position as 0.5*(v_a+v_b). However if a *or* b
-        // are constrained, then we want to keep that vertex and collapse to its position.
-        // This vertex (a or b) will be returned in collapse_to, which is -1 otherwise.
-        // If a *and* b are constrained, then things are complicated (and documented below).
-        bool can_collapse_vtx(int eid, int a, int b, out int collapse_to)
-        {
-            collapse_to = -1;
-            if (constraints == null)
-                return true;
-            VertexConstraint ca = constraints.GetVertexConstraint(a);
-            VertexConstraint cb = constraints.GetVertexConstraint(b);
-
-            // no constraint at all
-            if (ca.Fixed == false && cb.Fixed == false && ca.Target == null && cb.Target == null)
-                return true;
-
-            // handle a or b fixed
-            if ( ca.Fixed == true && cb.Fixed == false ) {
-                collapse_to = a;
-                return true;
-            }
-            if ( cb.Fixed == true && ca.Fixed == false) {
-                collapse_to = b;
-                return true;
-            }
-            // if both fixed, and options allow, treat this edge as unconstrained (eg collapse to midpoint)
-            // [RMS] tried picking a or b here, but something weird happens, where
-            //   eg cylinder cap will entirely erode away. Somehow edge lengths stay below threshold??
-            if ( AllowCollapseFixedVertsWithSameSetID 
-                    && ca.FixedSetID >= 0 
-                    && ca.FixedSetID == cb.FixedSetID) {
-                return true;
-            }
-
-            // handle a or b w/ target
-            if ( ca.Target != null && cb.Target == null ) {
-                collapse_to = a;
-                return true;
-            }
-            if ( cb.Target != null && ca.Target == null ) {
-                collapse_to = b;
-                return true;
-            }
-            // if both vertices are on the same target, and the edge is on that target,
-            // then we can collapse to either and use the midpoint (which will be projected
-            // to the target). *However*, if the edge is not on the same target, then we 
-            // cannot collapse because we would be changing the constraint topology!
-            if ( cb.Target != null && ca.Target != null && ca.Target == cb.Target ) {
-                if ( constraints.GetEdgeConstraint(eid).Target == ca.Target )
-                    return true;
-            }
-
-            return false;            
-        }
-
-
-        bool vertex_is_fixed(int vid)
-        {
-            if (constraints != null && constraints.GetVertexConstraint(vid).Fixed)
-                return true;
-            return false;
-        }
-        bool vertex_is_constrained(int vid)
-        {
-            if ( constraints != null ) {
-                VertexConstraint vc = constraints.GetVertexConstraint(vid);
-                if (vc.Fixed || vc.Target != null)
-                    return true;
-            }
-            return false;
-        }
-
-        VertexConstraint get_vertex_constraint(int vid)
-        {
-            if (constraints != null)
-                return constraints.GetVertexConstraint(vid);
-            return VertexConstraint.Unconstrained;
-        }
-
-        void project_vertex(int vID, IProjectionTarget targetIn)
+        protected virtual void project_vertex(int vID, IProjectionTarget targetIn)
         {
             Vector3d curpos = mesh.GetVertex(vID);
             Vector3d projected = targetIn.Project(curpos, vID);
@@ -591,7 +475,7 @@ namespace g3 {
         }
 
         // used by collapse-edge to get projected position for new vertex
-        Vector3d get_projected_collapse_position(int vid, Vector3d vNewPos)
+        protected virtual Vector3d get_projected_collapse_position(int vid, Vector3d vNewPos)
         {
             if (constraints != null) {
                 VertexConstraint vc = constraints.GetVertexConstraint(vid);
@@ -614,7 +498,7 @@ namespace g3 {
 
 
 
-		void FullSmoothPass_InPlace(bool bParallel) {
+		protected virtual void FullSmoothPass_InPlace(bool bParallel) {
             Func<DMesh3, int, double, Vector3d> smoothFunc = MeshUtil.UniformSmooth;
             if (CustomSmoothF != null) {
                 smoothFunc = CustomSmoothF;
@@ -639,6 +523,79 @@ namespace g3 {
                     smooth(vID);
             }
 		}
+
+
+
+
+        protected virtual void FullSmoothPass_Buffer(bool bParallel)
+        {
+            InitializeVertexBufferForPass();
+
+            Func<DMesh3, int, double, Vector3d> smoothFunc = MeshUtil.UniformSmooth;
+            if (CustomSmoothF != null) {
+                smoothFunc = CustomSmoothF;
+            } else {
+                if (SmoothType == SmoothTypes.MeanValue)
+                    smoothFunc = MeshUtil.MeanValueSmooth;
+                else if (SmoothType == SmoothTypes.Cotan)
+                    smoothFunc = MeshUtil.CotanSmooth;
+            }
+
+            Action<int> smooth = (vID) => {
+                bool bModified = false;
+                Vector3d vSmoothed = ComputeSmoothedVertexPos(vID, smoothFunc, out bModified);
+                if (bModified) {
+                    vModifiedV[vID] = true;
+                    vBufferV[vID] = vSmoothed;
+                }
+            };
+
+            if (bParallel) {
+                gParallel.ForEach<int>(smooth_vertices(), smooth);
+            } else {
+                foreach (int vID in smooth_vertices())
+                    smooth(vID);
+            }
+
+            ApplyVertexBuffer(bParallel);
+        }
+
+
+
+        protected DVector<Vector3d> vBufferV = new DVector<Vector3d>();
+        protected BitArray vModifiedV = new BitArray(4096);
+
+        protected virtual void InitializeVertexBufferForPass()
+        {
+            if (vBufferV.size < mesh.MaxVertexID)
+                vBufferV.resize(mesh.MaxVertexID + mesh.MaxVertexID / 5);
+            if (vModifiedV.Length < mesh.MaxVertexID) {
+                vModifiedV = new BitArray(2 * mesh.MaxVertexID);
+            } else {
+                vModifiedV.SetAll(false);
+            }
+        }
+
+        protected virtual void ApplyVertexBuffer(bool bParallel)
+        {
+            // [TODO] can probably use block-parallel here...
+            if (bParallel) {
+                gParallel.BlockStartEnd(0, mesh.MaxVertexID-1, (a,b) => {
+                    for (int vid = a; vid <= b; vid++) {
+                        if (vModifiedV[vid])
+                            Mesh.SetVertex(vid, vBufferV[vid]);
+                    }
+                });
+            } else {
+                foreach (int vid in mesh.VertexIndices()) {
+                    if (vModifiedV[vid])
+                        Mesh.SetVertex(vid, vBufferV[vid]);
+                }
+            }
+        }
+
+
+
 
         /// <summary>
         /// This computes smoothed positions w/ proper constraints/etc.
@@ -675,7 +632,7 @@ namespace g3 {
 
         // Project vertices onto projection target. 
         // We can do projection in parallel if we have .net 
-        void FullProjectionPass()
+        protected virtual void FullProjectionPass()
         {
             Action<int> project = (vID) => {
                 if (vertex_is_constrained(vID))
@@ -699,7 +656,7 @@ namespace g3 {
         // Project vertices towards projection target by input alpha, and optionally, don't project vertices too far away
         // We can do projection in parallel if we have .net 
         // [TODO] this code is currently not called
-        void FullProjectionPass(double projectionAlpha, double maxProjectDistance)
+        protected virtual void FullProjectionPass(double projectionAlpha, double maxProjectDistance)
         {
             projectionAlpha = MathUtil.Clamp(projectionAlpha, 0, 1);
 
@@ -755,7 +712,7 @@ namespace g3 {
 
 
         public bool ENABLE_DEBUG_CHECKS = false;
-        void DoDebugChecks()
+        protected virtual void DoDebugChecks()
         {
             if (ENABLE_DEBUG_CHECKS == false)
                 return;
